@@ -3,6 +3,7 @@ Visual Genome reference game.
 """
 
 from argparse import ArgumentParser
+from collections import defaultdict
 import itertools
 import json
 from pprint import pprint
@@ -158,7 +159,7 @@ def build_reinforce_model(rsa_model, vocabulary_weights):
     l_samples = tf.to_int32(tf.multinomial(l_distrs, 1)[:, 0])
     matches = tf.equal(rsa_model._object_idxs, l_samples)
     unscaled_rewards = tf.to_float(matches)
-    rewards = unscaled_rewards / weights
+    rewards = unscaled_rewards * weights
 
     s_gradients = reinforce_episodic_gradients([rsa_model._speaker_distrs],
                                                [rsa_model._speaker_samples],
@@ -171,7 +172,7 @@ def build_reinforce_model(rsa_model, vocabulary_weights):
 
 def main(args):
     vocabulary = np.arange(args.vocab_size)
-    vocab_weights = np.ones(len(vocabulary), dtype=np.float32)#np.random.uniform(size=len(vocabulary)).astype(np.float32)
+    vocab_weights = np.random.uniform(size=len(vocabulary)).astype(np.float32)#np.ones(len(vocabulary), dtype=np.float32)#
 
     with open(args.data_path, "r") as data_f:
         scenes = json.load(data_f)
@@ -183,7 +184,7 @@ def main(args):
     temperature = tf.placeholder(tf.float32, name="temperature", shape=())
     rsa_model = RSAModel(vocabulary, vocab_weights, all_objects,
                          temperature=temperature)
-    (unscaled_rewards, _), s_gradients, l_gradients = \
+    (unscaled_rewards, rewards), s_gradients, l_gradients = \
             build_reinforce_model(rsa_model, vocab_weights)
 
     opt = tf.train.MomentumOptimizer(args.learning_rate, 0.9)
@@ -205,8 +206,9 @@ def main(args):
             decay_steps = 500
             feed[temperature] = 1. * decay_rate ** ((i + 1) / decay_steps)
 
-            _, b_rewards = sess.run((train_op, unscaled_rewards), feed)
-            print(np.mean(b_rewards), "\t", feed[temperature])
+            _, b_rewards, b_unscaled_rewards = \
+                    sess.run((train_op, rewards, unscaled_rewards), feed)
+            print("%05i\t%.05f\t%.05f" % (i, np.mean(b_rewards), np.mean(b_unscaled_rewards)))
 
         embs = sess.run(rsa_model._embeddings)
 
@@ -215,7 +217,7 @@ def main(args):
     label2objs = defaultdict(list)
     for obj, label in obj2label.items():
         label2objs[label].append(obj)
-    pprint(label2objs)
+    pprint({idx: (weight, label2objs[idx]) for idx, weight in enumerate(vocab_weights)})
 
 
 if __name__ == '__main__':
