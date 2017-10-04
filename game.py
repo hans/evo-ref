@@ -5,6 +5,7 @@ Visual Genome reference game.
 from argparse import ArgumentParser
 import itertools
 import json
+from pprint import pprint
 
 import numpy as np
 import tensorflow as tf
@@ -156,7 +157,8 @@ def build_reinforce_model(rsa_model, vocabulary_weights):
     l_distrs = rsa_model._infer_pragmatic_listener(utterances=tf.to_int32(rsa_model._speaker_samples))
     l_samples = tf.to_int32(tf.multinomial(l_distrs, 1)[:, 0])
     matches = tf.equal(rsa_model._object_idxs, l_samples)
-    rewards = tf.to_float(matches)# / weights
+    unscaled_rewards = tf.to_float(matches)
+    rewards = unscaled_rewards / weights
 
     s_gradients = reinforce_episodic_gradients([rsa_model._speaker_distrs],
                                                [rsa_model._speaker_samples],
@@ -164,7 +166,7 @@ def build_reinforce_model(rsa_model, vocabulary_weights):
     l_gradients = reinforce_episodic_gradients([l_distrs], [l_samples],
                                                rewards)
 
-    return rewards, s_gradients, l_gradients
+    return (unscaled_rewards, rewards), s_gradients, l_gradients
 
 
 def main(args):
@@ -174,13 +176,15 @@ def main(args):
     with open(args.data_path, "r") as data_f:
         scenes = json.load(data_f)
     all_objects = sorted(set(itertools.chain.from_iterable(scenes)))
+    print("%i objects" % len(all_objects))
     obj2idx = {obj: idx for idx, obj in enumerate(all_objects)}
     scenes = [[obj2idx[obj] for obj in scene] for scene in scenes]
 
     temperature = tf.placeholder(tf.float32, name="temperature", shape=())
     rsa_model = RSAModel(vocabulary, vocab_weights, all_objects,
                          temperature=temperature)
-    rewards, s_gradients, l_gradients = build_reinforce_model(rsa_model, vocab_weights)
+    (unscaled_rewards, _), s_gradients, l_gradients = \
+            build_reinforce_model(rsa_model, vocab_weights)
 
     opt = tf.train.MomentumOptimizer(args.learning_rate, 0.9)
     train_op = opt.apply_gradients(list(s_gradients) + list(l_gradients))
@@ -189,7 +193,7 @@ def main(args):
     sess.run(tf.global_variables_initializer())
 
     with sess.as_default():
-        for i in range(50000):
+        for i in range(25000):
             # Sample a batch of scenes.
             scene_idxs = np.random.choice(len(scenes), size=args.batch_size,
                                           replace=False)
@@ -201,12 +205,17 @@ def main(args):
             decay_steps = 500
             feed[temperature] = 1. * decay_rate ** ((i + 1) / decay_steps)
 
-            _, b_rewards = sess.run((train_op, rewards), feed)
+            _, b_rewards = sess.run((train_op, unscaled_rewards), feed)
             print(np.mean(b_rewards), "\t", feed[temperature])
 
         embs = sess.run(rsa_model._embeddings)
-        print(embs)
-        print(embs.argmax(axis=1))
+
+    inferred_labels = embs.argmax(axis=1)
+    obj2label = dict(zip(all_objects, inferred_labels))
+    label2objs = defaultdict(list)
+    for obj, label in obj2label.items():
+        label2objs[label].append(obj)
+    pprint(label2objs)
 
 
 if __name__ == '__main__':
